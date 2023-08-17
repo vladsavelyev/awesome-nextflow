@@ -1,3 +1,9 @@
+#!/usr/bin/env python
+
+"""
+Collect metadata for the list of repositories
+"""
+
 import calendar
 import os
 import pprint
@@ -8,7 +14,13 @@ from github import Github
 from github.GithubException import UnknownObjectException, RateLimitExceededException
 
 import pandas as pd
-import wandb
+
+
+# Verify that contents of *.nf files contain the following lines
+CHECK_CONTENTS = [
+    # "#!/bin/env nextflow",
+    # "workflow {",
+]
 
 
 # do not clone LFS files
@@ -72,166 +84,186 @@ def get_language_percentages(repo):
     return {lang: (bytes / total_bytes) * 100 for lang, bytes in languages.items()}
 
 
-def check_repo(url):
-    print(f"Checking out {url}")
+# def metadata(url):
+#     """
+#     Collect metadata of pre-selected repos for the platform
+#     """
+#     if not check_repo_exists(g, url):
+#         print(f"Error: repo {url} does not exist")
+#         return None
+# 
+#     print(f"Checking out {url}")
+#     d = dict()
+#     repo = g.get_repo(url)
+#     repo = call_rate_limit_aware(lambda: repo, api_type="search")
+#     print(f"Processing {repo.full_name}")
+# 
+#     d["title"] = repo.name
+#     d["description"] = repo.description
+#     d["updated_at"] = repo.updated_at
+#     d["created_at"] = repo.created_at
+#     d["topics"] = ", ".join(repo.get_topics())
+#     d["website"] = repo.homepage
+#     d["stars"] = repo.stargazers_count
+#     d["watchers"] = repo.watchers_count
+#     d["forks"] = repo.forks_count
+#     d["last_commit_date"] = repo.get_commits().reversed[0].commit.committer.date
+#     releases = repo.get_releases()
+#     d["number_of_releases"] = releases.totalCount
+#     if d["number_of_releases"]:
+#         latest = releases.reversed[0]
+#         d["latest_release_date"] = latest.created_at
+#         d["latest_release_name"] = latest.title
+#     d["head_fork"] = repo.parent.full_name if repo.parent else None
+#     d["issues"] = repo.get_issues().totalCount
+#     d["open_issues"] = repo.get_issues(state="open").totalCount
+#     d["closed_issues"] = repo.get_issues(state="closed").totalCount
+#     d["prs"] = repo.get_pulls().totalCount
+#     d["open_prs"] = repo.get_pulls(state="open").totalCount
+#     d["closed_prs"] = repo.get_pulls(state="closed").totalCount
+#     d["contributors"] = repo.get_contributors().totalCount
+#     # d["clones"] = repo.get_clones_traffic()["count"]  # must have push access
+#     # d["unique_clones"] = repo.get_clones_traffic()["uniques"]  # must have push access
+#     # d["repo_views"] = repo.get_views_traffic()["count"]  # must have push access
+#     # d["unique_repo_views"] = repo.get_views_traffic()["uniques"]  # must have push access
+# 
+#     pprint.pprint(d)
+#     print()
+#     return d
+
+
+def metadata(url):
+    """
+    Collect repository selection criteria and metadata for the spreadsheet: 
+    https://docs.google.com/document/d/1kZWOBbIt9pY_wloCGcH2d9vYD4zgaTT7x-vTewu0eeA
+    """
     d = dict()
-    
-    url = "/".join(Path(url).parts[-2:])
     if not check_repo_exists(g, url):
-        print("Error: repo does not exist")
+        print(f"Error: repo {url} does not exist")
         d["exists"] = False
         return d
+
     d["exists"] = True
+    print(f"Checking out {url}")
     repo = g.get_repo(url)
     repo = call_rate_limit_aware(lambda: repo, api_type="search")
-    print(f"Processing {repo.full_name}")
 
+    d["title"] = repo.name
+    d["description"] = repo.description
     d["updated_at"] = repo.updated_at
-    
-    d["nextflow_main_lang"] = repo.language == "Nextflow"
-    d["nextflow_chars"] = repo.get_languages().get("Nextflow", 0)
+    d["created_at"] = repo.created_at
+    d["topics"] = ", ".join(repo.get_topics())
+    d["website"] = repo.homepage
+    d["stars"] = repo.stargazers_count
+    d["watchers"] = repo.watchers_count
+    d["forks"] = repo.forks_count
+    d["last_commit_date"] = repo.get_commits().reversed[0].commit.committer.date
+    releases = repo.get_releases()
+    d["number_of_releases"] = releases.totalCount
+    if d["number_of_releases"]:
+        latest = releases.reversed[0]
+        d["latest_release_date"] = latest.created_at
+        d["latest_release_name"] = latest.title
+    d["head_fork"] = repo.parent.full_name if repo.parent else None
+    d["issues"] = repo.get_issues().totalCount
+    d["open_issues"] = repo.get_issues(state="open").totalCount
+    d["closed_issues"] = repo.get_issues(state="closed").totalCount
+    d["prs"] = repo.get_pulls().totalCount
+    d["open_prs"] = repo.get_pulls(state="open").totalCount
+    d["closed_prs"] = repo.get_pulls(state="closed").totalCount
+    d["contributors"] = repo.get_contributors().totalCount
+    # d["clones"] = repo.get_clones_traffic()["count"]  # must have push access
+    # d["unique_clones"] = repo.get_clones_traffic()["uniques"]  # must have push access
+    # d["repo_views"] = repo.get_views_traffic()["count"]  # must have push access
+    # d["unique_repo_views"] = repo.get_views_traffic()["uniques"]  # must have push access
+
+    print("Calculating selection criteria")
+    d["nextflow main lang"] = repo.language == "Nextflow"
+    d["nextflow code chars"] = repo.get_languages().get("Nextflow", 0)
     d["languages"] = ", ".join(f"{n}: {c:.2f}%" for n, c in get_language_percentages(repo).items())
 
-    d["modules/nf-core exists"] = check_file_exists(repo, "modules/nf-core")
-    d["modules/subworkflows exists"] = check_file_exists(repo, "modules/subworkflows")
-    
     topics = [t.lower() for t in repo.get_topics()]
     d["nextflow in topics"] = "nextflow" in topics
-    d["nf-core in topics"] = "nf-core" in topics
     d["genomics in topics"] = "genomics" in topics
     d["bioinformatics in topics"] = "bioinformatics" in topics
     d["workflow in topics"] = "workflow" in topics
     d["pipeline in topics"] = "pipeline" in topics
-    if repo.description:
-        description = repo.description.lower()
-        d["nextflow in description"] = "nextflow" in description
-        d["nf-core in description"] = "nf-core" in description
-    else:
-        d["nextflow in description"] = False
-        d["nf-core in description"] = False
-        
+    d["nextflow in description"] = repo.description and "nextflow" in repo.description.lower()
+
+    # d["modules/nf-core exists"] = check_file_exists(repo, "modules/nf-core")
+    # d["modules/subworkflows exists"] = check_file_exists(repo, "modules/subworkflows")
+    
     def _check_file(f):
         d = {}
         if f.name == "main.nf":
             d["main.nf"] = True
-        if f.name == "nextflow_schema.json":
-            d["nextflow_schema.json"] = True
         if f.name == "nextflow.config":
             d["nextflow.config"] = True
-
         if f.name.endswith(".nf"):
             d["*.nf"] = True
-            try:
-                content = f.decoded_content.decode()
-            except Exception as r:
-                print(f"Error parsing file {f}: {r}")
-            else:
-                if content.startswith("#!/bin/env nextflow"):
-                    d["#!/bin/env nextflow"] = True
-                if "workflow {" in content:
-                    d["workflow {"] = True
+            if CHECK_CONTENTS:
+                try:
+                    content = f.decoded_content.decode()
+                except Exception as r:
+                    print(f"Error parsing file {f}: {r}")
+                else:
+                    for line in CHECK_CONTENTS:
+                        if line in content:
+                            d[f"contains {line}"] = True
         return d
     
-    d1 = {
-        "main.nf": False,
-        "nextflow_schema.json": False,
-        "nextflow.config": False,
-        "*.nf": False,
-        "#!/bin/env nextflow": False,
-        "workflow {": False,
-    }
     for f in repo.get_contents(""):
         if f.type == "file":
-            d1 |= _check_file(f)
-    d |= {f'{k} (in root)': v for k, v in d1.items()}
+            d |= {f'{k} (in root)': v for k, v in _check_file(f).items()}
 
-    d1 = {
-        "main.nf": False,
-        "nextflow_schema.json": False,
-        "nextflow.config": False,
-        "*.nf": False,
-        "#!/bin/env nextflow": False,
-        "workflow {": False,
-    }
     for f in repo.get_contents(""):
         if f.type == "dir":
             for f1 in repo.get_contents(f.path):
                 if f1.type == "file":
-                    d1 |= _check_file(f1)
-    d |= {f'{k} (in subfolder)': v for k, v in d1.items()}
+                    d |= {f'{k} (in subfolder)': v for k, v in _check_file(f).items()}
     
     pprint.pprint(d)
     print()
     return d
 
 
-def plot(df):
-    # Assuming you've gotten the SWEEP_ID from the previous step
-    SWEEP_ID = "n8pjxih7"
-    import wandb
-    api = wandb.Api()
-
-    sweep_id = wandb.sweep(
-        sweep={
-            'method': 'grid',
-            'metric': {
-                'name': 'dummy_metric',
-                'goal': 'maximize'
-            },
-            'parameters': {
-                'dummy_param': {
-                    'values': [1],
-                },
-            }
-        },
-        project='repos2'
-    )
-
-    def wandb_log():
-        wandb.init(project='repos2')
-        for _, row in df.iterrows():
-            wandb.log(row.to_dict())
-
-    wandb.agent(sweep_id, function=wandb_log, count=1)
-
-
 def main():
-    if Path("stats.csv").exists():
-        df = pd.read_csv("stats.csv")
-        print(f"{len(df)} repos already processed, remove stats.csv to reprocess")
-    else:
-        df = None
-    
     dicts = []
     with Path("README.md").open() as f:
         for line in f:
             if line.startswith("Tutorials"):
                 break
             if line.startswith("* ["):
-                name = line.split("[")[1].split("]")[0]
                 url = line.split("(")[1].split(")")[0]
-                dicts.append({"name": name, "url": url})
+                dicts.append({"url": url})
+
+    metadata_path = Path("metadata.csv")
+    if metadata_path.exists():
+        df = pd.read_csv(str(metadata_path))
+        print(f"{len(df)} repos already have metadata, remove {metadata_path} to reprocess")
+    else:
+        df = None
 
     new_dicts = []
     for i, d in enumerate(dicts):
         if df is not None and d['url'] in df['url'].values:
             continue
-        print(f"Processing #{i}: {d['name']}")
+        print(f"Processing #{i}: {d['url']}")
+        url = "/".join(Path(d['url']).parts[-2:])
         try:
-            d.update(check_repo(d['url']))
+            d.update(metadata(url))
         except Exception as e:
-            print(f"Error processing {d['name']}: {e}")
+            print(f"Error processing {d[url]}: {e}")
             break
         new_dicts.append(d)
     print(f"Processed {len(new_dicts)} more repos")
-    new_df = pd.DataFrame(new_dicts)
-    if df is None:
-        df = pd.DataFrame(new_dicts)
-    else:
-        df = pd.concat([df, new_df])
-    df.to_csv("stats.csv")
-    
-    plot(df)
+    if new_dicts:
+        new_df = pd.DataFrame(new_dicts)
+        if df is None:
+            df = pd.DataFrame(new_dicts)
+        else:
+            df = pd.concat([df, new_df])
+        df.to_csv(str(metadata_path))
 
 
 if __name__ == "__main__":
