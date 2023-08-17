@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 
 """
-Collect metadata for the awesome repositories
+Collect metadata for the awesome repositories, populate metadata.csv.
 """
 
 import calendar
