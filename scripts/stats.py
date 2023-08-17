@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 
 """
-Collect metadata for the list of repositories
+Collect metadata for the awesome repositories
 """
 
 import calendar
@@ -16,14 +16,14 @@ from github.GithubException import UnknownObjectException, RateLimitExceededExce
 import pandas as pd
 
 
-# Verify that contents of *.nf files contain the following lines
+# Lines to check that *.nf files contain
 CHECK_CONTENTS = [
     # "#!/bin/env nextflow",
     # "workflow {",
 ]
 
 
-# do not clone LFS files
+# Do not clone LFS files
 os.environ["GIT_LFS_SKIP_SMUDGE"] = "1"
 g = Github(os.environ["GITHUB_TOKEN"])
 
