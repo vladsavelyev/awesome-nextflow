@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 
 """
-Collect metadata for the awesome repositories, populate metadata.csv.
+Collect metadata for the awesome repositories, populate metadata.csv
 """
 
 import calendar
@@ -10,17 +10,10 @@ import pprint
 import time
 from pathlib import Path
 
+import pandas as pd
+from sqlalchemy import create_engine
 from github import Github
 from github.GithubException import UnknownObjectException, RateLimitExceededException
-
-import pandas as pd
-
-
-# Lines to check that *.nf files contain
-CHECK_CONTENTS = [
-    # "#!/bin/env nextflow",
-    # "workflow {",
-]
 
 
 # Do not clone LFS files
@@ -84,54 +77,6 @@ def get_language_percentages(repo):
     return {lang: (bytes / total_bytes) * 100 for lang, bytes in languages.items()}
 
 
-# def metadata(url):
-#     """
-#     Collect metadata of pre-selected repos for the platform
-#     """
-#     if not check_repo_exists(g, url):
-#         print(f"Error: repo {url} does not exist")
-#         return None
-# 
-#     print(f"Checking out {url}")
-#     d = dict()
-#     repo = g.get_repo(url)
-#     repo = call_rate_limit_aware(lambda: repo, api_type="search")
-#     print(f"Processing {repo.full_name}")
-# 
-#     d["title"] = repo.name
-#     d["description"] = repo.description
-#     d["updated_at"] = repo.updated_at
-#     d["created_at"] = repo.created_at
-#     d["topics"] = ", ".join(repo.get_topics())
-#     d["website"] = repo.homepage
-#     d["stars"] = repo.stargazers_count
-#     d["watchers"] = repo.watchers_count
-#     d["forks"] = repo.forks_count
-#     d["last_commit_date"] = repo.get_commits().reversed[0].commit.committer.date
-#     releases = repo.get_releases()
-#     d["number_of_releases"] = releases.totalCount
-#     if d["number_of_releases"]:
-#         latest = releases.reversed[0]
-#         d["latest_release_date"] = latest.created_at
-#         d["latest_release_name"] = latest.title
-#     d["head_fork"] = repo.parent.full_name if repo.parent else None
-#     d["issues"] = repo.get_issues().totalCount
-#     d["open_issues"] = repo.get_issues(state="open").totalCount
-#     d["closed_issues"] = repo.get_issues(state="closed").totalCount
-#     d["prs"] = repo.get_pulls().totalCount
-#     d["open_prs"] = repo.get_pulls(state="open").totalCount
-#     d["closed_prs"] = repo.get_pulls(state="closed").totalCount
-#     d["contributors"] = repo.get_contributors().totalCount
-#     # d["clones"] = repo.get_clones_traffic()["count"]  # must have push access
-#     # d["unique_clones"] = repo.get_clones_traffic()["uniques"]  # must have push access
-#     # d["repo_views"] = repo.get_views_traffic()["count"]  # must have push access
-#     # d["unique_repo_views"] = repo.get_views_traffic()["uniques"]  # must have push access
-# 
-#     pprint.pprint(d)
-#     print()
-#     return d
-
-
 def metadata(url):
     """
     Collect repository selection criteria and metadata for the spreadsheet: 
@@ -177,50 +122,51 @@ def metadata(url):
     # d["repo_views"] = repo.get_views_traffic()["count"]  # must have push access
     # d["unique_repo_views"] = repo.get_views_traffic()["uniques"]  # must have push access
 
-    print("Calculating selection criteria")
-    d["nextflow main lang"] = repo.language == "Nextflow"
-    d["nextflow code chars"] = repo.get_languages().get("Nextflow", 0)
+    d["nextflow_main_lang"] = repo.language == "Nextflow"
+    d["nextflow_code_chars"] = repo.get_languages().get("Nextflow", 0)
     d["languages"] = ", ".join(f"{n}: {c:.2f}%" for n, c in get_language_percentages(repo).items())
 
-    topics = [t.lower() for t in repo.get_topics()]
-    d["nextflow in topics"] = "nextflow" in topics
-    d["genomics in topics"] = "genomics" in topics
-    d["bioinformatics in topics"] = "bioinformatics" in topics
-    d["workflow in topics"] = "workflow" in topics
-    d["pipeline in topics"] = "pipeline" in topics
-    d["nextflow in description"] = repo.description and "nextflow" in repo.description.lower()
+    # topics = [t.lower() for t in repo.get_topics()]
+    # d["nextflow_in_topics"] = "nextflow" in topics
+    # d["genomics_in_topics"] = "genomics" in topics
+    # d["bioinformatics_in_topics"] = "bioinformatics" in topics
+    # d["workflow_in_topics"] = "workflow" in topics
+    # d["pipeline_in_topics"] = "pipeline" in topics
+    # d["nextflow_in_description"] = repo.description and "nextflow" in repo.description.lower()
 
-    # d["modules/nf-core exists"] = check_file_exists(repo, "modules/nf-core")
-    # d["modules/subworkflows exists"] = check_file_exists(repo, "modules/subworkflows")
-    
     def _check_file(f):
         d = {}
         if f.name == "main.nf":
-            d["main.nf"] = True
+            d["main_nf"] = True
         if f.name == "nextflow.config":
-            d["nextflow.config"] = True
+            d["nextflow_config"] = True
         if f.name.endswith(".nf"):
-            d["*.nf"] = True
-            if CHECK_CONTENTS:
+            d["any_nf"] = True
+            # Lines to check that *.nf files contain
+            contents_lines = [
+                # "#!/bin/env nextflow",
+                # "workflow {",
+            ]
+            if contents_lines:
                 try:
                     content = f.decoded_content.decode()
                 except Exception as r:
                     print(f"Error parsing file {f}: {r}")
                 else:
-                    for line in CHECK_CONTENTS:
+                    for line in contents_lines:
                         if line in content:
                             d[f"contains {line}"] = True
         return d
     
     for f in repo.get_contents(""):
         if f.type == "file":
-            d |= {f'{k} (in root)': v for k, v in _check_file(f).items()}
+            d |= {f'{k}_in_root': v for k, v in _check_file(f).items()}
 
     for f in repo.get_contents(""):
         if f.type == "dir":
             for f1 in repo.get_contents(f.path):
                 if f1.type == "file":
-                    d |= {f'{k} (in subfolder)': v for k, v in _check_file(f).items()}
+                    d |= {f'{k}_in_subfolder': v for k, v in _check_file(f).items()}
     
     pprint.pprint(d)
     print()
@@ -229,7 +175,7 @@ def metadata(url):
 
 def main():
     dicts = []
-    with Path("README.md").open() as f:
+    with Path("../README.md").open() as f:
         for line in f:
             if line.startswith("Tutorials"):
                 break
@@ -237,12 +183,16 @@ def main():
                 url = line.split("(")[1].split(")")[0]
                 dicts.append({"url": url})
 
-    metadata_path = Path("metadata.csv")
-    if metadata_path.exists():
-        df = pd.read_csv(str(metadata_path))
-        print(f"{len(df)} repos already have metadata, remove {metadata_path} to reprocess")
-    else:
-        df = None
+    db_path = Path("metadata.db")
+    tsv_path = Path("metadata.csv")
+    df = None
+    if db_path.exists():
+        engine = create_engine(f"sqlite:///{db_path}")
+        df = pd.read_sql("SELECT * FROM repositories", engine)
+        print(f"{len(df)} repos already have metadata, remove {db_path} to reprocess")
+    elif tsv_path.exists():
+        df = pd.read_csv(str(tsv_path))
+        print(f"{len(df)} repos already have metadata, remove {tsv_path} to reprocess")
 
     new_dicts = []
     for i, d in enumerate(dicts):
@@ -263,7 +213,8 @@ def main():
             df = pd.DataFrame(new_dicts)
         else:
             df = pd.concat([df, new_df])
-        df.to_csv(str(metadata_path))
+        engine = create_engine(f"sqlite:///{db_path}")
+        df.to_sql('repositories', engine, if_exists='replace', index=False)
 
 
 if __name__ == "__main__":
