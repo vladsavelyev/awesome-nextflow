@@ -1,29 +1,19 @@
-from pathlib import Path
-
 from sqlalchemy import Column, Integer, String, DateTime, Boolean
-from sqlalchemy import create_engine
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker
 
-# Here you should replace 'YOUR_DATABASE_URL' with your actual database connection string.
-db_path = Path("metadata.db")
-DATABASE_URL = f"sqlite:///{db_path}"
-engine = create_engine(DATABASE_URL)
-# Query the database and also manage the persistence of data.
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-
-Base = declarative_base()
+from .database import Base
 
 
 class Repository(Base):
     __tablename__ = "repositories"
 
-    # id = Column(Integer, primary_key=True, index=True)
-    url = Column(String, primary_key=True, index=True)
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    # Populated through scraping
+    url = Column(String, index=True)
     title = Column(String)
     description = Column(String)
     updated_at = Column(DateTime)
     created_at = Column(DateTime)
+    not_available = Column(Boolean)
     topics = Column(String)
     website = Column(String)
     stars = Column(Integer)
@@ -44,6 +34,20 @@ class Repository(Base):
     nextflow_main_lang = Column(String)
     nextflow_code_chars = Column(Integer)
     languages = Column(String)
-    # labels = Column(String)
-    # categories = Column(String)
-    # blacklisted = Column(Boolean)
+    any_nf_in_root = Column(Boolean)
+    main_nf_in_root = Column(Boolean)
+    nextflow_config_in_root = Column(Boolean)
+    any_nf_in_subfolder = Column(Boolean)
+    main_nf_in_subfolder = Column(Boolean)
+    nextflow_config_in_subfolder = Column(Boolean)
+    # Populated through UI
+    labels = Column(String)
+    categories = Column(String)
+    blacklisted = Column(Boolean)
+
+
+class User(Base):
+    __tablename__ = "users"
+
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    name = Column(String)

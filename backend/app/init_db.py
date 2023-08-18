@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 
 """
-Collect metadata for the awesome repositories, populate metadata.csv
+Collect metadata for the awesome repositories, initialise and populate the database
 """
 
 import calendar
@@ -11,14 +11,19 @@ import time
 from pathlib import Path
 
 import pandas as pd
-from sqlalchemy import create_engine
 from github import Github
 from github.GithubException import UnknownObjectException, RateLimitExceededException
 
+from .models import Repository
+from .database import engine
 
-# Do not clone LFS files
-os.environ["GIT_LFS_SKIP_SMUDGE"] = "1"
+
+LIMIT = 2
+csv_path = Path("metadata.csv")
+
+os.environ["GIT_LFS_SKIP_SMUDGE"] = "1"  # Do not clone LFS files
 g = Github(os.environ["GITHUB_TOKEN"])
+
 
 def get_rate_limit(api_type): 
     return getattr(g.get_rate_limit(), api_type)
@@ -77,7 +82,7 @@ def get_language_percentages(repo):
     return {lang: (bytes / total_bytes) * 100 for lang, bytes in languages.items()}
 
 
-def metadata(url):
+def parse_repo(url):
     """
     Collect repository selection criteria and metadata for the spreadsheet: 
     https://docs.google.com/document/d/1kZWOBbIt9pY_wloCGcH2d9vYD4zgaTT7x-vTewu0eeA
@@ -85,10 +90,9 @@ def metadata(url):
     d = dict()
     if not check_repo_exists(g, url):
         print(f"Error: repo {url} does not exist")
-        d["exists"] = False
+        d["not_available"] = True
         return d
 
-    d["exists"] = True
     print(f"Checking out {url}")
     repo = g.get_repo(url)
     repo = call_rate_limit_aware(lambda: repo, api_type="search")
@@ -133,6 +137,13 @@ def metadata(url):
     # d["workflow_in_topics"] = "workflow" in topics
     # d["pipeline_in_topics"] = "pipeline" in topics
     # d["nextflow_in_description"] = repo.description and "nextflow" in repo.description.lower()
+    
+    d["main_nf_in_root"] = False
+    d["nextflow_config_in_root"] = False
+    d["any_nf_in_root"] = False
+    d["main_nf_in_subfolder"] = False
+    d["nextflow_config_in_subfolder"] = False
+    d["any_nf_in_subfolder"] = False
 
     def _check_file(f):
         d = {}
@@ -173,7 +184,20 @@ def metadata(url):
     return d
 
 
-def main():
+def init_db():
+    Repository.__table__.create(bind=engine, checkfirst=True)
+    return engine
+
+
+def csv_to_db(engine):
+    if not csv_path.exists():
+        print(f"{csv_path.absolute()} does not exist, run parse_into_csv first")
+        return
+    df = pd.read_csv(str(csv_path))
+    df.to_sql('repositories', engine, if_exists='append', index=False)
+
+
+def parse_into_csv():
     dicts = []
     with Path("../README.md").open() as f:
         for line in f:
@@ -183,25 +207,26 @@ def main():
                 url = line.split("(")[1].split(")")[0]
                 dicts.append({"url": url})
 
-    db_path = Path("metadata.db")
-    tsv_path = Path("metadata.csv")
+    csv_path = Path("metadata.csv")
     df = None
-    if db_path.exists():
-        engine = create_engine(f"sqlite:///{db_path}")
-        df = pd.read_sql("SELECT * FROM repositories", engine)
-        print(f"{len(df)} repos already have metadata, remove {db_path} to reprocess")
-    elif tsv_path.exists():
-        df = pd.read_csv(str(tsv_path))
-        print(f"{len(df)} repos already have metadata, remove {tsv_path} to reprocess")
+    # if db_path.exists():
+    #     engine = create_engine(f"sqlite:///{db_path}")
+    #     df = pd.read_sql("SELECT * FROM repositories", engine)
+    #     print(f"{len(df)} repos already have metadata, remove {db_path} to reprocess")
+    if csv_path.exists():
+        df = pd.read_csv(str(csv_path))
+        print(f"{len(df)} repos already have metadata, remove {csv_path} to reprocess")
 
     new_dicts = []
     for i, d in enumerate(dicts):
+        if LIMIT is not None and i >= LIMIT:
+            break
         if df is not None and d['url'] in df['url'].values:
             continue
         print(f"Processing #{i}: {d['url']}")
         url = "/".join(Path(d['url']).parts[-2:])
         try:
-            d.update(metadata(url))
+            d.update(parse_repo(url))
         except Exception as e:
             print(f"Error processing {d[url]}: {e}")
             break
@@ -213,8 +238,15 @@ def main():
             df = pd.DataFrame(new_dicts)
         else:
             df = pd.concat([df, new_df])
-        engine = create_engine(f"sqlite:///{db_path}")
-        df.to_sql('repositories', engine, if_exists='replace', index=False)
+        # engine = create_engine(f"sqlite:///{db_path}")
+        # df.to_sql('repositories', engine, if_exists='replace', index=False)
+        df.to_csv(str(csv_path), index=False)
+
+
+def main():
+    parse_into_csv()
+    engine = init_db()
+    csv_to_db(engine)
 
 
 if __name__ == "__main__":
