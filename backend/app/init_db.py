@@ -18,7 +18,7 @@ from .models import Repository
 from .database import engine
 
 
-LIMIT = 2
+LIMIT = None
 csv_path = Path("metadata.csv")
 
 os.environ["GIT_LFS_SKIP_SMUDGE"] = "1"  # Do not clone LFS files
