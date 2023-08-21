@@ -1,5 +1,7 @@
-github
 pandas
 fastapi[all]
 uvicorn
 db-sqlite3
+pygithub
+uvicorn
+sqlalchemy
