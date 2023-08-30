@@ -57,8 +57,8 @@ class Repository(RepositoryBase):
 
 class UserBase(BaseModel):
     name: str
-    
-    
+
+
 class UserCreate(UserBase):
     pass
 

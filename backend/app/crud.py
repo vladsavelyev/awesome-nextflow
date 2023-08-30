@@ -17,7 +17,7 @@ def create_repo(db: Session, repo: schemas.RepositoryCreate):
         url=repo.url,
         labels=repo.labels,
         categories=repo.categories,
-        blacklisted=repo.blacklisted
+        blacklisted=repo.blacklisted,
     )
     db.add(db_repo)
     db.commit()

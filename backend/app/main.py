@@ -9,12 +9,17 @@ app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://localhost:8000", "http://localhost:8001"],
+    allow_origins=[
+        "http://localhost:3000",
+        "http://localhost:8000",
+        "http://localhost:8001",
+    ],
     allow_methods=["*"],
-    allow_headers=["*"]
+    allow_headers=["*"],
 )
 
 models.Base.metadata.create_all(bind=engine)
+
 
 def get_db():
     db = SessionLocal()
@@ -72,4 +77,5 @@ async def blacklist_repo(repo_id: int, db: Session = Depends(get_db)):
 if __name__ == "__main__":
     # For debugging purposes only
     import uvicorn
+
     uvicorn.run(app, host="0.0.0.0", port=8001, log_level="debug")
