@@ -6,7 +6,6 @@ Collect metadata for the awesome repositories, initialise and populate the datab
 
 import calendar
 import os
-import pprint
 import time
 from pathlib import Path
 
@@ -28,29 +27,78 @@ os.environ["GIT_LFS_SKIP_SMUDGE"] = "1"  # Do not clone LFS files
 g = Github(os.environ["GITHUB_TOKEN"])
 
 
+def metadata_for_urls(
+    urls: list, out_path: Path, save_readme=False, sanity_filter=False
+):
+    df = None
+    if out_path.exists():
+        df = pd.read_csv(str(out_path))
+        print(f"Found metadata for {len(df)} repos, remove {out_path} to reprocess")
+
+    new_dicts = []
+    for i, url in enumerate(urls):
+        if df is not None and url in df["url"].values:
+            continue
+        print(f"Processing #{i}: {url}")
+        url = "/".join(Path(url).parts[-2:])
+        try:
+            d = collect_repo_metadata(
+                url, save_readme=save_readme, sanity_filter=sanity_filter
+            )
+        except Exception as e:
+            print(f"Error processing {url}: {e}")
+        else:
+            if (
+                sanity_filter
+                and not d.get("nf_files_in_root")
+                and not d.get("nf_files_in_subfolder")
+            ):
+                continue
+            new_dicts.append(d)
+    print(f"Processed {len(new_dicts)} more repos")
+    if new_dicts:
+        new_df = pd.DataFrame(new_dicts)
+        if df is None:
+            df = pd.DataFrame(new_dicts)
+        else:
+            df = pd.concat([df, new_df])
+        df.to_csv(str(out_path), index=False)
+
+
 class Scraper:
-    def scrape(self, out_path="scraped.csv", limit=None):
+    """
+    Usage: python scrape.py scrape --out_path scraped.csv --limit 100
+    """
+
+    @staticmethod
+    def scrape(out_path="scraped.csv", limit=None):
         """
         Search for repositories with "Nextflow" in the README, collect metadata on the
         found repositories, filter them, and write the metadata to a CSV.
         """
-        searched_path = Path("searched.csv")
-        if searched_path.exists():
-            print(f"List of found repos exists, remove {out_path} to re-search")
-            with searched_path.open() as f:
-                found_repos = f.read().splitlines()
+        print(
+            "Step 1: preliminary GitHub search for alive repos with 'nextflow' in README"
+        )
+        if (found_urls_path := Path("gh_found_urls.csv")).exists():
+            print(f"List of found repos exists, remove {found_urls_path} to re-search")
         else:
-            found_repos = search_gh()
-            with searched_path.open("w") as f:
-                f.write("\n".join(found_repos))
+            search_gh(out_path=found_urls_path)
 
+        with found_urls_path.open() as f:
+            found_repo_urls = f.read().splitlines()
+
+        print(f"Step 2: collecting metadata for found {len(found_repo_urls)} repos")
         if limit is not None:
-            found_repos = found_repos[:limit]
-            
-        out_path = Path(out_path)
-        self.metadata_for_urls(found_repos, out_path, save_readme=False, filter=True)
+            print(f"Limiting to {limit} repos")
+            found_repo_urls = found_repo_urls[:limit]
 
-    def readme(self, out_path="repos_from_readme.csv"):
+        out_path = Path(out_path)
+        metadata_for_urls(
+            found_repo_urls, out_path, save_readme=False, sanity_filter=True
+        )
+
+    @staticmethod
+    def readme(out_path="repos_from_readme.csv"):
         """
         Parse the README.md file, collect metadata on the found repositories, and
         write the metadata to a CSV.
@@ -65,36 +113,7 @@ class Scraper:
                     url = line.split("(")[1].split(")")[0]
                     urls.append(url)
 
-        self.metadata_for_urls(urls, out_path, save_readme=True, filter=False)
-
-    def metadata_for_urls(self, urls: list, out_path: Path, save_readme=False, filter=False):
-        df = None
-        if out_path.exists():
-            df = pd.read_csv(str(out_path))
-            print(f"Found metadata for {len(df)} repos, remove {out_path} to reprocess")
-
-        new_dicts = []
-        for i, url in enumerate(urls):
-            if df is not None and url in df["url"].values:
-                continue
-            print(f"Processing #{i}: {url}")
-            url = "/".join(Path(url).parts[-2:])
-            try:
-                d = collect_repo_metadata(url, save_readme=save_readme, filter=filter)
-            except Exception as e:
-                print(f"Error processing {url}: {e}")
-            else:
-                if filter and not d.get("nf_files_in_root") and not d.get("nf_files_in_subfolder"):
-                    continue
-                new_dicts.append(d)
-        print(f"Processed {len(new_dicts)} more repos")
-        if new_dicts:
-            new_df = pd.DataFrame(new_dicts)
-            if df is None:
-                df = pd.DataFrame(new_dicts)
-            else:
-                df = pd.concat([df, new_df])
-            df.to_csv(str(out_path), index=False)
+        metadata_for_urls(urls, out_path, save_readme=True, sanity_filter=False)
 
 
 def get_rate_limit(api_type):
@@ -154,7 +173,7 @@ def get_language_percentages(repo):
     return {lang: (bytes / total_bytes) * 100 for lang, bytes in languages.items()}
 
 
-def collect_repo_metadata(url, save_readme=False, filter=False):
+def collect_repo_metadata(url, save_readme=False, sanity_filter=False):
     """
     Collect repository selection criteria and metadata for the spreadsheet:
     https://docs.google.com/document/d/1kZWOBbIt9pY_wloCGcH2d9vYD4zgaTT7x-vTewu0eeA
@@ -168,7 +187,7 @@ def collect_repo_metadata(url, save_readme=False, filter=False):
     print(f"Checking out {url}")
     repo = g.get_repo(url)
     repo = call_rate_limit_aware(lambda: repo, api_type="search")
-    
+
     nf_files_in_root = []
     nf_files_in_subfolders = []
     for f in repo.get_contents(""):
@@ -183,10 +202,10 @@ def collect_repo_metadata(url, save_readme=False, filter=False):
                         nf_files_in_subfolders.append(f1.path)
                         break
 
-    if filter and not nf_files_in_root and not nf_files_in_subfolders:
+    if sanity_filter and not nf_files_in_root and not nf_files_in_subfolders:
         print(f"Skipping {url} because it no *.nf file found in root or 2st level")
         return d
-    
+
     d["nf_files_in_root"] = ", ".join(nf_files_in_root)
     d["nf_files_in_subfolders"] = ", ".join(nf_files_in_subfolders)
 
@@ -255,42 +274,54 @@ def collect_repo_metadata(url, save_readme=False, filter=False):
             else:
                 d["readme_contains_nextflow"] = "nextflow" in readme_content.lower()
                 print("readme_contains_nextflow:", d["readme_contains_nextflow"])
-                # save readme to repos/repo-name/README.md
+                # Save readme to repos/repo-name/README.md
                 readme_path = Path("repos") / d["name"] / readme.name
                 readme_path.parent.mkdir(parents=True, exist_ok=True)
                 with readme_path.open("w") as f:
                     f.write(readme_content)
 
-    # pprint.pprint(d)
-    # print()
     return d
 
 
-def search_gh() -> list:
+def search_gh(out_path: Path):
     """
     Search for GitHub repositories matching the criteria.
     * First, search for repositories with "Nextflow" in the README.
     * Second, filter to those having *.nf files in the root or on the first level.
     """
-    repo_search = g.search_repositories(
-        "nextflow in:readme archived:false", sort="updated"
-    )
+    query = "nextflow in:readme archived:false"
+    paginated_list = g.search_repositories(query)
     total_count = call_rate_limit_aware(
-        lambda: repo_search.totalCount, api_type="search"
+        lambda: paginated_list.totalCount, api_type="search"
     )
-    found_repos = []
     print(f"Checking {total_count} repos.")
-    for i in range(total_count):
-        repo = call_rate_limit_aware(lambda: repo_search[i], api_type="search")
-        if i % 10 == 0:
-            print(f"{i} of {total_count} repos done.")
-        print(f"Processing {repo.full_name}.")
-        if repo.owner.login in BLACKLIST or repo.full_name in BLACKLIST:
-            print(f"Repo {repo.owner.login} is blacklisted")
-            continue
-        else:
-            found_repos.append(repo.url)
-    return found_repos
+
+    # Iterate over the repositories and retrieve their details
+    page_idx = 0
+    repo_num = 0
+    while True:
+        print(f"Processing page {page_idx + 1}...")
+        repos = call_rate_limit_aware(
+            lambda: paginated_list.get_page(page_idx), api_type="search"
+        )
+        if not repos:
+            break
+
+        for repo in repos:
+            repo_num += 1
+            print(f"{repo_num}/{total_count}. Checking {repo.full_name}...", end="")
+            if repo.owner.login in BLACKLIST:
+                print(f"❌ Repo owner {repo.owner.login} is blacklisted")
+                continue
+            elif repo.full_name in BLACKLIST:
+                print(f"❌ Repo {repo.full_name} is blacklisted")
+                continue
+            else:
+                with out_path.open("a") as f:
+                    f.write(f"{repo.url}\n")
+                print("👌")
+
+        page_idx += 1
 
 
 if __name__ == "__main__":
