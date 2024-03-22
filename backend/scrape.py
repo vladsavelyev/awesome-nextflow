@@ -345,12 +345,10 @@ def _process_github_search_result(paginated_list, count: int, out_dir: Path, dat
 
 def search_gh(out_dir: Path):
     """
-    Search for GitHub repositories with "nextflow" in the README.
+    Search for GitHub repositories that mention "nextflow" in README.
 
-    Search returns only top 1000 entries, so we harden the criteria: get the
-    most updated and most starred repositories first. Then we perform separate
-    search by each year, and concatenate.
-        found_urls_path = Path("gh_found_urls.csv")
+    GitHub returns only top 1000 entries, so we work around by searching year 
+    by each year, or month by month or day by date if needed, and concatenate.
     """
     base_query = "nextflow in:readme archived:false"
     for year in range(2015, datetime.datetime.today().year + 1):
