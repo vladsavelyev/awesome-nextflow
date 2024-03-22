@@ -7,7 +7,6 @@ Collect metadata for the awesome repositories, initialise and populate the datab
 import calendar
 import datetime
 import os
-import sys
 import time
 from pathlib import Path
 
@@ -49,23 +48,17 @@ def metadata_for_urls(
     for i, url in enumerate(urls):
         if df is not None and url in df["url"].values:
             continue
-        print(f"Processing #{i}: {url}")
+        print(f"{i + 1:04d}/{len(urls)}: {url:<80}", end=" ")
         url = "/".join(Path(url).parts[-2:])
         try:
-            d = collect_repo_metadata(
+            d = _collect_repo_metadata(
                 url,
                 save_readme=save_readme,
                 filter_having_nf_files=filter_having_nf_files,
             )
         except Exception as e:
-            print(f"Error processing {url}: {e}")
+            print(f"❌error: {e}")
         else:
-            if (
-                filter_having_nf_files
-                and not d.get("nf_files_in_root")
-                and not d.get("nf_files_in_subfolder")
-            ):
-                continue
             new_dicts.append(d)
     print(f"Processed {len(new_dicts)} more repos")
     if new_dicts:
@@ -92,10 +85,13 @@ class Scraper:
             "Step 1: preliminary GitHub search for alive repos with 'nextflow' in README"
         )
         search_dir = Path("github-search")
-        search_gh(out_dir=search_dir)
+        if search_dir.exists():
+            print(f"Directory {search_dir} already exists, delete to re-search")
+        else:
+            search_gh(out_dir=search_dir)
 
         urls = []
-        for csv_path in search_dir.glob("*.csv"):
+        for csv_path in search_dir.glob("*.tsv"):
             with csv_path.open() as f:
                 df = pd.read_csv(f, sep="\t")
                 urls.extend(df.url)
@@ -106,9 +102,7 @@ class Scraper:
             urls = urls[:limit]
 
         out_path = Path(out_path)
-        metadata_for_urls(
-            urls, out_path, save_readme=False, filter_having_nf_files=True
-        )
+        metadata_for_urls(urls, out_path, save_readme=True, filter_having_nf_files=True)
 
     @staticmethod
     def readme(out_path="repos_from_readme.csv"):
@@ -188,18 +182,19 @@ def get_language_percentages(repo):
     return {lang: (bytes / total_bytes) * 100 for lang, bytes in languages.items()}
 
 
-def collect_repo_metadata(url, save_readme=False, filter_having_nf_files=False):
+def _collect_repo_metadata(
+    url, save_readme=False, filter_having_nf_files=False
+) -> dict:
     """
     Collect repository selection criteria and metadata for the spreadsheet:
     https://docs.google.com/document/d/1kZWOBbIt9pY_wloCGcH2d9vYD4zgaTT7x-vTewu0eeA
     """
     d = {"url": url}
     if not check_repo_exists(g, url):
-        print(f"Error: repo {url} does not exist")
+        print(f"❌error: repo {url} does not exist")
         d["can_not_pull"] = True
         return d
 
-    print(f"Checking out {url}")
     repo = g.get_repo(url)
     repo = call_rate_aware(lambda: repo, api_type="search")
 
@@ -218,13 +213,13 @@ def collect_repo_metadata(url, save_readme=False, filter_having_nf_files=False):
                         break
 
     if filter_having_nf_files and not nf_files_in_root and not nf_files_in_subfolders:
-        print(f"Skipping {url} because it no *.nf file found in root or 2st level")
+        print("❌skipping: no *.nf file found in root or 2st level")
         return d
 
     d["nf_files_in_root"] = ", ".join(nf_files_in_root)
     d["nf_files_in_subfolders"] = ", ".join(nf_files_in_subfolders)
 
-    d["url"] = repo.html_url  # Clickable URL
+    d["url"] = repo.html_url  # clickable URL
     d["title"] = repo.name
     d["owner"] = repo.owner.login
     d["name"] = f"{d['title']}--{d['owner']}"
@@ -262,6 +257,7 @@ def collect_repo_metadata(url, save_readme=False, filter_having_nf_files=False):
         f"{n}: {c:.2f}%" for n, c in get_language_percentages(repo).items()
     )
 
+    # Perhaps useless metrics:
     # topics = [t.lower() for t in repo.get_topics()]
     # d["nextflow_in_topics"] = "nextflow" in topics
     # d["genomics_in_topics"] = "genomics" in topics
@@ -285,21 +281,21 @@ def collect_repo_metadata(url, save_readme=False, filter_having_nf_files=False):
             try:
                 readme_content = readme.decoded_content.decode()
             except Exception as r:
-                print(f"Error parsing {readme.name}: {r}")
+                print(f"⚠️ error parsing {readme.name}: {r}", end=" ")
             else:
                 d["readme_contains_nextflow"] = "nextflow" in readme_content.lower()
-                print("readme_contains_nextflow:", d["readme_contains_nextflow"])
                 # Save readme to repos/repo-name/README.md
-                readme_path = Path("repos") / d["name"] / readme.name
+                readme_path = Path("readmes") / d["name"] / readme.name
                 readme_path.parent.mkdir(parents=True, exist_ok=True)
                 with readme_path.open("w") as f:
                     f.write(readme_content)
 
+    print("👌")
     return d
 
 
 def _process_github_search_result(paginated_list, count: int, out_dir: Path, date: str):
-    out_path = out_dir / f"repos-{date}.csv"
+    out_path = out_dir / f"repos-{date}.tsv"
     if out_path.exists():
         print(f"File {out_path} already exists, delete to re-search for {date}")
         return
@@ -338,7 +334,7 @@ def _process_github_search_result(paginated_list, count: int, out_dir: Path, dat
                     "url": repo.html_url,
                     "last_updated": repo.updated_at.strftime("%Y-%m-%d %H:%M:%S"),
                     "stars": repo.stargazers_count,
-                    "issues": repo.get_issues().totalCount,
+                    "issues": -1,
                 }
             )
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -362,14 +358,14 @@ def search_gh(out_dir: Path):
         query = f"{base_query} created:{year}-01-01..{year}-12-31"
         result = g.search_repositories(query, sort="updated")
         count = call_rate_aware(lambda: result.totalCount, api_type="search")
-        if count <= 900:
+        if count < 1000:
             print(f"Found {count} repositories in {year}")
             _process_github_search_result(result, count, out_dir, str(year))
             print("")
             continue
 
         print(
-            f"Search result includes {count}>900 repositories in {year}, which "
+            f"Search result includes {count}>=1000 repositories in {year}, which "
             f"indicates that we hit search limit. Search month by month instead..."
         )
         for month in range(1, 12 + 1):
@@ -377,14 +373,14 @@ def search_gh(out_dir: Path):
             query = f"{base_query} created:{year}-{month:02d}-01..{year}-{month:02d}-{month_days}"
             result = g.search_repositories(query, sort="updated")
             count = call_rate_aware(lambda: result.totalCount, api_type="search")
-            if count <= 900:
+            if count < 1000:
                 print(f"Found {count} repositories in month {year}-{month}")
                 _process_github_search_result(result, count, out_dir, f"{year}-{month}")
                 print("")
                 continue
 
             print(
-                f"Search result includes {count}>900 repositories in {year}-{month}, which "
+                f"Search result includes {count}>=1000 repositories in {year}-{month}, which "
                 f"indicates that we hit search limit. Search day by day instead..."
             )
             for day in range(1, calendar.monthrange(year, month)[1] + 1):
