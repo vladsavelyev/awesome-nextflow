@@ -5,7 +5,9 @@ Collect metadata for the awesome repositories, initialise and populate the datab
 """
 
 import calendar
+import datetime
 import os
+import sys
 import time
 from pathlib import Path
 
@@ -13,6 +15,7 @@ import pandas as pd
 from github import Github
 from github.GithubException import UnknownObjectException, RateLimitExceededException
 import fire
+import humanize
 
 
 README_PATH = "../README.md"
@@ -28,8 +31,15 @@ g = Github(os.environ["GITHUB_TOKEN"])
 
 
 def metadata_for_urls(
-    urls: list, out_path: Path, save_readme=False, sanity_filter=False
+    urls: list[str],
+    out_path: Path,
+    save_readme=False,
+    filter_having_nf_files=False,
 ):
+    """
+    Get metadata for each repo and filter to those having *.nf files in the root
+    or on the first level.
+    """
     df = None
     if out_path.exists():
         df = pd.read_csv(str(out_path))
@@ -43,13 +53,15 @@ def metadata_for_urls(
         url = "/".join(Path(url).parts[-2:])
         try:
             d = collect_repo_metadata(
-                url, save_readme=save_readme, sanity_filter=sanity_filter
+                url,
+                save_readme=save_readme,
+                filter_having_nf_files=filter_having_nf_files,
             )
         except Exception as e:
             print(f"Error processing {url}: {e}")
         else:
             if (
-                sanity_filter
+                filter_having_nf_files
                 and not d.get("nf_files_in_root")
                 and not d.get("nf_files_in_subfolder")
             ):
@@ -85,16 +97,23 @@ class Scraper:
             search_gh(out_path=found_urls_path)
 
         with found_urls_path.open() as f:
-            found_repo_urls = f.read().splitlines()
+            df = pd.read_csv(
+                f,
+                sep="\t",
+                header=None,
+                names=["name", "url", "date", "stars", "issues"],
+            )
+            print(df.columns)
+            urls = df.url
 
-        print(f"Step 2: collecting metadata for found {len(found_repo_urls)} repos")
+        print(f"Step 2: collecting metadata for found {len(urls)} repos")
         if limit is not None:
             print(f"Limiting to {limit} repos")
-            found_repo_urls = found_repo_urls[:limit]
+            urls = urls[:limit]
 
         out_path = Path(out_path)
         metadata_for_urls(
-            found_repo_urls, out_path, save_readme=False, sanity_filter=True
+            urls, out_path, save_readme=False, filter_having_nf_files=True
         )
 
     @staticmethod
@@ -113,7 +132,9 @@ class Scraper:
                     url = line.split("(")[1].split(")")[0]
                     urls.append(url)
 
-        metadata_for_urls(urls, out_path, save_readme=True, sanity_filter=False)
+        metadata_for_urls(
+            urls, out_path, save_readme=True, filter_having_nf_files=False
+        )
 
 
 def get_rate_limit(api_type):
@@ -129,7 +150,7 @@ def rate_limit_wait(api_type):
     time.sleep(sleep_time)
 
 
-def call_rate_limit_aware(func, api_type="core"):
+def call_rate_aware(func, api_type="core"):
     while True:
         try:
             return func()
@@ -173,7 +194,7 @@ def get_language_percentages(repo):
     return {lang: (bytes / total_bytes) * 100 for lang, bytes in languages.items()}
 
 
-def collect_repo_metadata(url, save_readme=False, sanity_filter=False):
+def collect_repo_metadata(url, save_readme=False, filter_having_nf_files=False):
     """
     Collect repository selection criteria and metadata for the spreadsheet:
     https://docs.google.com/document/d/1kZWOBbIt9pY_wloCGcH2d9vYD4zgaTT7x-vTewu0eeA
@@ -186,7 +207,7 @@ def collect_repo_metadata(url, save_readme=False, sanity_filter=False):
 
     print(f"Checking out {url}")
     repo = g.get_repo(url)
-    repo = call_rate_limit_aware(lambda: repo, api_type="search")
+    repo = call_rate_aware(lambda: repo, api_type="search")
 
     nf_files_in_root = []
     nf_files_in_subfolders = []
@@ -202,7 +223,7 @@ def collect_repo_metadata(url, save_readme=False, sanity_filter=False):
                         nf_files_in_subfolders.append(f1.path)
                         break
 
-    if sanity_filter and not nf_files_in_root and not nf_files_in_subfolders:
+    if filter_having_nf_files and not nf_files_in_root and not nf_files_in_subfolders:
         print(f"Skipping {url} because it no *.nf file found in root or 2st level")
         return d
 
@@ -283,45 +304,98 @@ def collect_repo_metadata(url, save_readme=False, sanity_filter=False):
     return d
 
 
-def search_gh(out_path: Path):
-    """
-    Search for GitHub repositories matching the criteria.
-    * First, search for repositories with "Nextflow" in the README.
-    * Second, filter to those having *.nf files in the root or on the first level.
-    """
-    query = "nextflow in:readme archived:false"
-    paginated_list = g.search_repositories(query)
-    total_count = call_rate_limit_aware(
-        lambda: paginated_list.totalCount, api_type="search"
-    )
-    print(f"Checking {total_count} repos.")
-
-    # Iterate over the repositories and retrieve their details
+def _process_github_search_result(
+    paginated_list, count: int, out_path: Path, date: str
+):
+    # Iterate over search results and retrieve repo details
     page_idx = 0
     repo_num = 0
     while True:
         print(f"Processing page {page_idx + 1}...")
-        repos = call_rate_limit_aware(
+        repos = call_rate_aware(
             lambda: paginated_list.get_page(page_idx), api_type="search"
         )
+        page_idx += 1
         if not repos:
             break
 
+        repo_infos = []
         for repo in repos:
             repo_num += 1
-            print(f"{repo_num}/{total_count}. Checking {repo.full_name}...", end="")
+            print(
+                f"{date}: {repo_num:<3}/{count:<3}. Checking {repo.full_name:<80} "
+                f"last updated {humanize.naturaldate(repo.updated_at):<20} "
+                f"{repo.stargazers_count} stars... ",
+                end="",
+            )
             if repo.owner.login in BLACKLIST:
                 print(f"❌ Repo owner {repo.owner.login} is blacklisted")
                 continue
             elif repo.full_name in BLACKLIST:
                 print(f"❌ Repo {repo.full_name} is blacklisted")
                 continue
-            else:
-                with out_path.open("a") as f:
-                    f.write(f"{repo.url}\n")
-                print("👌")
+            print("👌")
+            repo_infos.append(
+                {
+                    "name": repo.full_name,
+                    "url": repo.html_url,
+                    "last_updated": repo.updated_at.strftime("%Y-%m-%d %H:%M:%S"),
+                    "stars": repo.stargazers_count,
+                    "issues": repo.get_issues().totalCount,
+                }
+            )
+        print(f"Appending {len(repo_infos)} entries to file {out_path}...")
+        with out_path.open("a") as f:
+            for repo_info in repo_infos:
+                f.write(
+                    f"{repo_info['name']}\t{repo_info['url']}\t{repo_info['last_updated']}\t{repo_info['stars']}\t{repo_info['issues']}\n"
+                )
 
-        page_idx += 1
+
+def search_gh(out_path: Path):
+    """
+    Search for GitHub repositories with "nextflow" in the README.
+
+    Search returns only top 1000 entries, so we harden the criteria: get the
+    most updated and most starred repositories first. Then we perform separate
+    search by each year, and concatenate.
+        found_urls_path = Path("gh_found_urls.csv")
+    """
+    base_query = "nextflow in:readme archived:false"
+    for year in range(2015, datetime.datetime.today().year + 1):
+        print(f"Searching for Nextflow repositories in {year}...")
+        query = f"{base_query} created:{year}-01-01..{year}-12-31"
+        result = g.search_repositories(query, sort="updated")
+        count = call_rate_aware(lambda: result.totalCount, api_type="search")
+        if count <= 900:
+            print(f"Found {count} repositories in {year}")
+            _process_github_search_result(result, count, out_path, year)
+            print("")
+            continue
+
+        # Perhaps there are more than 1000 repos in year, so doing month by month
+        for month in range(1, 12 + 1):
+            query = f"{base_query} created:{year}-{month:02d}-01..{year}-{month:02d}-31"
+            result = g.search_repositories(query, sort="updated")
+            count = call_rate_aware(lambda: result.totalCount, api_type="search")
+            if count <= 900:
+                print(f"Found {count} repositories in month {year}-{month}")
+                _process_github_search_result(
+                    result, count, out_path, f"{year}-{month}"
+                )
+                print("")
+                continue
+
+            # Still too many in a month, doing daily
+            for day in range(1, calendar.monthrange(year, month)[1] + 1):
+                query = f"{base_query} created:{year}-{month:02d}-{day:02d}"
+                result = g.search_repositories(query, sort="updated")
+                count = call_rate_aware(lambda: result.totalCount, api_type="search")
+                print(f"Found {count} repositories in day {year}-{month}-{day}")
+                _process_github_search_result(
+                    result, count, out_path, f"{year}-{month}-{day}"
+                )
+                print("")
 
 
 if __name__ == "__main__":
