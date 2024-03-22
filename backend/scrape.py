@@ -91,20 +91,14 @@ class Scraper:
         print(
             "Step 1: preliminary GitHub search for alive repos with 'nextflow' in README"
         )
-        if (found_urls_path := Path("gh_found_urls.csv")).exists():
-            print(f"List of found repos exists, remove {found_urls_path} to re-search")
-        else:
-            search_gh(out_path=found_urls_path)
+        search_dir = Path("github-search")
+        search_gh(out_dir=search_dir)
 
-        with found_urls_path.open() as f:
-            df = pd.read_csv(
-                f,
-                sep="\t",
-                header=None,
-                names=["name", "url", "date", "stars", "issues"],
-            )
-            print(df.columns)
-            urls = df.url
+        urls = []
+        for csv_path in search_dir.glob("*.csv"):
+            with csv_path.open() as f:
+                df = pd.read_csv(f, sep="\t")
+                urls.extend(df.url)
 
         print(f"Step 2: collecting metadata for found {len(urls)} repos")
         if limit is not None:
@@ -304,12 +298,16 @@ def collect_repo_metadata(url, save_readme=False, filter_having_nf_files=False):
     return d
 
 
-def _process_github_search_result(
-    paginated_list, count: int, out_path: Path, date: str
-):
+def _process_github_search_result(paginated_list, count: int, out_dir: Path, date: str):
+    out_path = out_dir / f"repos-{date}.csv"
+    if out_path.exists():
+        print(f"File {out_path} already exists, delete to re-search for {date}")
+        return
+
     # Iterate over search results and retrieve repo details
     page_idx = 0
     repo_num = 0
+    repo_infos = []
     while True:
         print(f"Processing page {page_idx + 1}...")
         repos = call_rate_aware(
@@ -319,7 +317,6 @@ def _process_github_search_result(
         if not repos:
             break
 
-        repo_infos = []
         for repo in repos:
             repo_num += 1
             print(
@@ -344,15 +341,13 @@ def _process_github_search_result(
                     "issues": repo.get_issues().totalCount,
                 }
             )
-        print(f"Appending {len(repo_infos)} entries to file {out_path}...")
-        with out_path.open("a") as f:
-            for repo_info in repo_infos:
-                f.write(
-                    f"{repo_info['name']}\t{repo_info['url']}\t{repo_info['last_updated']}\t{repo_info['stars']}\t{repo_info['issues']}\n"
-                )
+    out_dir.mkdir(parents=True, exist_ok=True)
+    print(f"Appending {len(repo_infos)} entries to file {out_path}...")
+    df = pd.DataFrame(repo_infos)
+    df.to_csv(out_path, index=False, sep="\t", header=True)
 
 
-def search_gh(out_path: Path):
+def search_gh(out_dir: Path):
     """
     Search for GitHub repositories with "nextflow" in the README.
 
@@ -369,31 +364,36 @@ def search_gh(out_path: Path):
         count = call_rate_aware(lambda: result.totalCount, api_type="search")
         if count <= 900:
             print(f"Found {count} repositories in {year}")
-            _process_github_search_result(result, count, out_path, year)
+            _process_github_search_result(result, count, out_dir, str(year))
             print("")
             continue
 
-        # Perhaps there are more than 1000 repos in year, so doing month by month
+        print(
+            f"Search result includes {count}>900 repositories in {year}, which "
+            f"indicates that we hit search limit. Search month by month instead..."
+        )
         for month in range(1, 12 + 1):
-            query = f"{base_query} created:{year}-{month:02d}-01..{year}-{month:02d}-31"
+            month_days = calendar.monthrange(year, month)[1]
+            query = f"{base_query} created:{year}-{month:02d}-01..{year}-{month:02d}-{month_days}"
             result = g.search_repositories(query, sort="updated")
             count = call_rate_aware(lambda: result.totalCount, api_type="search")
             if count <= 900:
                 print(f"Found {count} repositories in month {year}-{month}")
-                _process_github_search_result(
-                    result, count, out_path, f"{year}-{month}"
-                )
+                _process_github_search_result(result, count, out_dir, f"{year}-{month}")
                 print("")
                 continue
 
-            # Still too many in a month, doing daily
+            print(
+                f"Search result includes {count}>900 repositories in {year}-{month}, which "
+                f"indicates that we hit search limit. Search day by day instead..."
+            )
             for day in range(1, calendar.monthrange(year, month)[1] + 1):
                 query = f"{base_query} created:{year}-{month:02d}-{day:02d}"
                 result = g.search_repositories(query, sort="updated")
                 count = call_rate_aware(lambda: result.totalCount, api_type="search")
                 print(f"Found {count} repositories in day {year}-{month}-{day}")
                 _process_github_search_result(
-                    result, count, out_path, f"{year}-{month}-{day}"
+                    result, count, out_dir, f"{year}-{month}-{day}"
                 )
                 print("")
 
