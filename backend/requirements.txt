@@ -6,3 +6,7 @@ pygithub
 uvicorn
 sqlalchemy
 fire
+humanize
+sqlmodel
+pyairtable
+dotenv
