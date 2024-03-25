@@ -154,12 +154,13 @@ def find_metadata_for_urls(
     or on the first level. Add found URLs to the table.
     """
     for i, url in enumerate(urls):
+        t = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         with Session(engine) as session:
             repo = session.exec(
                 select(RepositorySQLModel).where(RepositorySQLModel.url == url)
             ).first()
             if repo:
-                print(f"{i + 1:04d}/{len(urls)}: {url:<80} already in the database")
+                print(f"{t} {i + 1:04d}/{len(urls)}: {url:<80} already in the database")
                 continue
             repo = session.exec(
                 select(FilteredRepositorySQLModel).where(
@@ -168,11 +169,11 @@ def find_metadata_for_urls(
             ).first()
             if repo:
                 print(
-                    f"{i + 1:04d}/{len(urls)}: {url:<80} already in the filtered table"
+                    f"{t} {i + 1:04d}/{len(urls)}: {url:<80} already in the filtered table"
                 )
                 continue
 
-            print(f"{i + 1:04d}/{len(urls)}: {url:<80}", end=" ")
+            print(f"{t} {i + 1:04d}/{len(urls)}: {url:<80}", end=" ")
             try:
                 repo: RepositorySQLModel | FilteredRepositorySQLModel = (
                     _collect_repo_metadata(
