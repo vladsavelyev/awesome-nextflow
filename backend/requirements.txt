@@ -10,3 +10,4 @@ humanize
 sqlmodel
 pyairtable
 dotenv
+requests
