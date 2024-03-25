@@ -1,9 +1,9 @@
-from fastapi import FastAPI, Depends
-from sqlalchemy.orm import Session
+from fastapi import FastAPI
+from sqlmodel import SQLModel, Session, select
 from starlette.middleware.cors import CORSMiddleware
 
-from . import crud, models, schemas
-from .database import SessionLocal, engine
+from app.database import engine
+from . import models
 
 app = FastAPI()
 
@@ -18,60 +18,23 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-models.Base.metadata.create_all(bind=engine)
 
-
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
+def create_db_and_tables() -> None:
+    """Create the database and tables if they don't exist."""
+    SQLModel.metadata.create_all(engine)
 
 
 @app.get("/", tags=["root"])
-async def read_repos(skip: int = 0, limit: int = 10, db: Session = Depends(get_db)):
-    return crud.get_repos(db, skip=skip, limit=limit)
+async def read_repositories():
+    with Session(engine) as session:
+        return session.exec(select(models.Repository)).all()
 
 
-@app.get("/repositories")
-async def read_repos(skip: int = 0, limit: int = 10, db: Session = Depends(get_db)):
-    return crud.get_repos(db, skip=skip, limit=limit)
-
-
-@app.get("/repositories/{repo_id}")
-async def read_repo(repo_id: int, db: Session = Depends(get_db)):
-    return crud.get_repo(db, repo_id)
-
-
-@app.post("/repositories", response_model=schemas.Repository)
-async def create_repo(repo: schemas.RepositoryCreate, db: Session = Depends(get_db)):
-    return crud.create_repo(db=db, repo=repo)
-
-
-@app.post("/repositories/{repo_id}/labels")
-async def add_label(repo_id: int, label: str, db: Session = Depends(get_db)):
-    return crud.add_label(db=db, repo_id=repo_id, label=label)
-
-
-@app.post("/repositories/{repo_id}/categories")
-async def add_category(repo_id: int, category: str, db: Session = Depends(get_db)):
-    return crud.add_category(db=db, repo_id=repo_id, category=category)
-
-
-@app.delete("/repositories/{repo_id}/labels")
-async def remove_label(repo_id: int, label: str, db: Session = Depends(get_db)):
-    return crud.remove_label(db=db, repo_id=repo_id, label=label)
-
-
-@app.delete("/repositories/{repo_id}/categories")
-async def remove_category(repo_id: int, category: str, db: Session = Depends(get_db)):
-    return crud.remove_category(db=db, repo_id=repo_id, category=category)
-
-
-@app.post("/repositories/{repo_id}/blacklist")
-async def blacklist_repo(repo_id: int, db: Session = Depends(get_db)):
-    return crud.blacklist_repo(db=db, repo_id=repo_id)
+@app.post("/repositories", response_model=models.Repository)
+async def read_repository(repo_url: str):
+    with Session(engine) as session:
+        statement = select(models.Repository).where(models.Repository.url == repo_url)
+        return session.exec(statement).first()
 
 
 if __name__ == "__main__":

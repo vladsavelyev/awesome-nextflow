@@ -1,54 +1,49 @@
-from sqlalchemy import Column, Integer, String, DateTime, Boolean
+import datetime
 
-from .database import Base
+from sqlmodel import Field, SQLModel
 
 
-class Repository(Base):
+class Repository(SQLModel, table=True):
     __tablename__ = "repositories"
 
-    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
-    # Populated through scraping
-    url = Column(String, index=True)
-    title = Column(String)
-    owner = Column(String)
-    name = Column(String)
-    description = Column(String)
-    updated_at = Column(DateTime)
-    created_at = Column(DateTime)
-    can_not_pull = Column(Boolean)
-    topics = Column(String)
-    website = Column(String)
-    stars = Column(Integer)
-    watchers = Column(Integer)
-    forks = Column(Integer)
-    last_commit_date = Column(DateTime)
-    number_of_releases = Column(Integer)
-    latest_release_date = Column(DateTime)
-    latest_release_name = Column(String)
-    head_fork = Column(String)
-    issues = Column(Integer)
-    open_issues = Column(Integer)
-    closed_issues = Column(Integer)
-    prs = Column(Integer)
-    open_prs = Column(Integer)
-    closed_prs = Column(Integer)
-    contributors = Column(Integer)
-    nextflow_main_lang = Column(String)
-    nextflow_code_chars = Column(Integer)
-    languages = Column(String)
-    nf_files_in_root = Column(String)
-    nf_files_in_subfolders = Column(String)
-    # readme_name = Column(String)
-    # readme_contains_nextflow = Column(Boolean)
-    # readme_contents = Column(String)
-    # Populated through UI
-    labels = Column(String)
-    categories = Column(String)
-    blacklisted = Column(Boolean)
+    url: str = Field(primary_key=True)
+    alive: bool = Field(default=True)
+    highlighted: bool = Field(default=False)
+    hidden: bool = Field(default=False)
+    nf_files_in_root: str
+    nf_files_in_subfolders: str
+    title: str
+    owner: str
+    slugified_name: str
+    description: str | None
+    updated_at: datetime.datetime
+    created_at: datetime.datetime
+    topics: str
+    website: str | None
+    stars: int
+    watchers: int
+    forks: int
+    number_of_releases: int
+    head_fork: str | None
+    open_issues: int
+    open_prs: int
+    nextflow_main_lang: bool
+    nextflow_code_chars: int
+    languages: str
+    readme_name: str | None = None
+    readme_contains_nextflow: bool | None = None
 
 
-class User(Base):
+class FilteredRepository(SQLModel, table=True):
+    __tablename__ = "filtered_repositories"
+
+    url: str = Field(primary_key=True)
+    exists: bool
+    no_nf_files: bool | None = None
+
+
+class User(SQLModel, table=True):
     __tablename__ = "users"
 
-    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
-    name = Column(String)
+    id: int = Field(primary_key=True)
+    name: str

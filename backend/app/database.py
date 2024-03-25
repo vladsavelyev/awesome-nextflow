@@ -1,16 +1,12 @@
-from pathlib import Path
+import os
+import dotenv
 
-from sqlalchemy import create_engine
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker
+from sqlmodel import SQLModel, create_engine
 
-db_path = Path(__file__) / ".." / ".." / "data.db"
-database_url = f"sqlite:///{db_path}"
-# database_url = "postgresql://user:password@postgresserver/db"
+dotenv.load_dotenv()
 
-engine = create_engine(
-    database_url, connect_args={"check_same_thread": False}  # Only for SQLite
-)
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+sql_url = os.getenv("DATABASE_URL")
+assert sql_url is not None, sql_url
+engine = create_engine(sql_url)
 
-Base = declarative_base()
+SQLModel.metadata.create_all(engine)

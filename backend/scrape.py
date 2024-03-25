@@ -11,20 +11,20 @@ import time
 from pathlib import Path
 from traceback import print_exc
 
-import pandas as pd
-from github import Github
-from github.GithubException import UnknownObjectException, RateLimitExceededException
+import dotenv
 import fire
 import humanize
-from sqlmodel import Field, SQLModel, Session, create_engine, select
-from pyairtable.orm import Model as AirtableModel, fields as F
-from pyairtable import Api as AirtableApi
-import dotenv
+import pandas as pd
+import requests
+from github import Github
+from github.GithubException import UnknownObjectException, RateLimitExceededException
+from sqlmodel import Session, select
+
+from app.database import engine
+from app.models import Repository, FilteredRepository
 
 dotenv.load_dotenv()
 
-airtable_base_id = os.getenv("AIRTABLE_BASE_ID")
-airtable_token = os.getenv("AIRTABLE_TOKEN")
 github_token = os.getenv("GITHUB_TOKEN")
 
 
@@ -40,289 +40,132 @@ os.environ["GIT_LFS_SKIP_SMUDGE"] = "1"  # Do not clone LFS files
 g = Github(github_token)
 
 
-class FilteredRepositorySQLModel(SQLModel, table=True):
-    __tablename__ = "filteredrepo"
-
-    url: str = Field(primary_key=True)
-    exists: bool
-    no_nf_files: bool | None = None
-
-
-class RepositorySQLModel(SQLModel, table=True):
-    __tablename__ = "repo"
-
-    url: str = Field(primary_key=True)
-    exists: bool
-    nf_files_in_root: str
-    nf_files_in_subfolders: str
-    title: str
-    owner: str
-    slugified_name: str
-    description: str | None
-    updated_at: datetime.datetime
-    created_at: datetime.datetime
-    topics: str
-    website: str | None
-    stars: int
-    watchers: int
-    forks: int
-    last_commit_date: datetime.datetime
-    number_of_releases: int
-    latest_release_date: datetime.datetime | None = None
-    latest_release_name: str | None = None
-    head_fork: str | None
-    issues: int
-    open_issues: int
-    closed_issues: int
-    prs: int
-    open_prs: int
-    closed_prs: int
-    contributors: int
-    nextflow_main_lang: bool
-    nextflow_code_chars: int
-    languages: str
-    readme_name: str | None = None
-    readme_contains_nextflow: bool | None = None
-
-
-engine = create_engine("sqlite:///repositories.db")
-SQLModel.metadata.create_all(engine)
-
-
-class FilteredRepositoryAirtable(AirtableModel):
-    url = F.TextField("URL")
-    alive = F.CheckboxField("Alive")
-    no_nf_files = F.CheckboxField("No .nf files")
-
-    class Meta:
-        base_id = airtable_base_id
-        api_key = airtable_token
-        table_name = "Filtered repositories"
-
-
-class RepositoryAirtable(AirtableModel):
-    url = F.TextField("URL")
-    alive = F.CheckboxField("Alive")
-    validated = F.CheckboxField("Valid")
-    highlighted = F.CheckboxField("Highlighted")
-    is_nf_core = F.CheckboxField("nf-core")
-    comment = F.TextField("Comment")
-    title = F.TextField("Title")
-    owner = F.TextField("Owner")
-    slugified_name = F.TextField("Slugified Name")
-    description = F.TextField("Description")
-    updated_at = F.DatetimeField("Updated at")
-    created_at = F.DatetimeField("Created at")
-    topics = F.TextField("Topics")
-    website = F.TextField("Website")
-    stars = F.IntegerField("Stars")
-    watchers = F.IntegerField("Watchers")
-    forks = F.IntegerField("Forks")
-    last_commit_date = F.DatetimeField("Last commit date")
-    number_of_releases = F.IntegerField("Number of releases")
-    latest_release_date = F.DatetimeField("Latest release date")
-    latest_release_name = F.TextField("Latest release name")
-    head_fork = F.TextField("Head fork")
-    issues = F.IntegerField("Issues")
-    open_issues = F.IntegerField("Open issues")
-    closed_issues = F.IntegerField("Closed issues")
-    prs = F.IntegerField("PRs")
-    open_prs = F.IntegerField("Open PRs")
-    closed_prs = F.IntegerField("Closed PRs")
-    contributors = F.IntegerField("Contributors")
-    nf_files_in_root = F.TextField(".nf files in root")
-    nf_files_in_subfolders = F.TextField(".nf files in subfolders")
-    nextflow_main_lang = F.CheckboxField("Nextflow is main language")
-    nextflow_code_chars = F.IntegerField("Nextflow code characters")
-    languages = F.TextField("Languages")
-    readme_name = F.TextField("Readme file name")
-    readme_contains_nextflow = F.CheckboxField("Readme contains Nextflow")
-
-    class Meta:
-        base_id = airtable_base_id
-        api_key = airtable_token
-        table_name = "Repositories"
-
-
-def find_metadata_for_urls(
-    urls: list[str],
-    save_readme=False,
-    filter_having_nf_files=False,
-):
-    """
-    Get metadata for each repo and filter to those having *.nf files in the root
-    or on the first level. Add found URLs to the table.
-    """
-    for i, url in enumerate(urls):
-        t = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        with Session(engine) as session:
-            repo = session.exec(
-                select(RepositorySQLModel).where(RepositorySQLModel.url == url)
-            ).first()
-            if repo:
-                print(f"{t} {i + 1:04d}/{len(urls)}: {url:<80} already in the database")
-                continue
-            repo = session.exec(
-                select(FilteredRepositorySQLModel).where(
-                    FilteredRepositorySQLModel.url == url
-                )
-            ).first()
-            if repo:
-                print(
-                    f"{t} {i + 1:04d}/{len(urls)}: {url:<80} already in the filtered table"
-                )
-                continue
-
-            print(f"{t} {i + 1:04d}/{len(urls)}: {url:<80}", end=" ")
-            try:
-                repo: RepositorySQLModel | FilteredRepositorySQLModel = (
-                    _collect_repo_metadata(
-                        url,
-                        save_readme=save_readme,
-                        filter_having_nf_files=filter_having_nf_files,
-                    )
-                )
-            except RateLimitExceededException:
-                print("❌rate limit uncaught:")
-                print_exc()
-            except Exception as e:
-                print(f"❌error: {e}")
-                print_exc()
-            else:
-                session.add(repo)
-                session.commit()
-
-
 class Scraper:
     """
     Usage: python scrape.py scrape --out_path scraped.csv --limit 100
     """
 
-    @staticmethod
-    def scrape():
-        """
-        Search for repositories with "Nextflow" in the README, collect metadata on the
-        found repositories, filter them, and write the metadata to a CSV.
-        """
-        print("Step 1: GitHub search for alive repos with 'nextflow' in README")
-        search_dir = Path("github-search")
-        if search_dir.exists():
-            print(f"Directory {search_dir} already exists, delete to re-search")
-        else:
-            search_gh(out_dir=search_dir)
+    search_dir = Path("github-search-starred")
 
-        urls = []
-        for csv_path in search_dir.glob("*.tsv"):
+    @staticmethod
+    def search_github():
+        """
+        Search for GitHub repositories that mention "nextflow" in README.
+
+        GitHub returns only top 1000 entries, so we work around by searching year
+        by each year, or month by month or day by date if needed, and concatenate.
+        """
+        if Scraper.search_dir.exists():
+            print(f"Directory {Scraper.search_dir} already exists, delete to re-search")
+            return
+
+        base_query = "nextflow in:readme archived:false stars:>1"
+        for year in range(2015, datetime.datetime.today().year + 1):
+            print(f"Searching for Nextflow repositories in {year}...")
+            query = f"{base_query} created:{year}-01-01..{year}-12-31"
+            result = g.search_repositories(query, sort="updated")
+            count = call_rate_aware(lambda: result.totalCount, api_type="search")
+            if count < 1000:
+                print(f"Found {count} repositories in {year}")
+                _process_github_search_result(
+                    result, count, Scraper.search_dir, str(year)
+                )
+                print("")
+                continue
+
+            print(
+                f"Search result includes {count}>=1000 repositories in {year}, which "
+                f"indicates that we hit search limit. Search month by month instead..."
+            )
+            for month in range(1, 12 + 1):
+                month_days = calendar.monthrange(year, month)[1]
+                query = f"{base_query} created:{year}-{month:02d}-01..{year}-{month:02d}-{month_days}"
+                result = g.search_repositories(query, sort="updated")
+                count = call_rate_aware(lambda: result.totalCount, api_type="search")
+                if count < 1000:
+                    print(f"Found {count} repositories in month {year}-{month}")
+                    _process_github_search_result(
+                        result, count, Scraper.search_dir, f"{year}-{month}"
+                    )
+                    print("")
+                    continue
+
+                print(
+                    f"Search result includes {count}>=1000 repositories in {year}-{month}, which "
+                    f"indicates that we hit search limit. Search day by day instead..."
+                )
+                for day in range(1, calendar.monthrange(year, month)[1] + 1):
+                    query = f"{base_query} created:{year}-{month:02d}-{day:02d}"
+                    result = g.search_repositories(query, sort="updated")
+                    count = call_rate_aware(
+                        lambda: result.totalCount, api_type="search"
+                    )
+                    print(f"Found {count} repositories in day {year}-{month}-{day}")
+                    _process_github_search_result(
+                        result, count, Scraper.search_dir, f"{year}-{month}-{day}"
+                    )
+                    print("")
+
+    @staticmethod
+    def collect_metadata():
+        """
+        Get metadata for each repo and filter to those having *.nf files in the root
+        or on the first level. Add found data to the DB.
+        """
+        # Load initial list of found repositories.
+        url_by_date = {}
+        for csv_path in sorted(Scraper.search_dir.glob("*.tsv")):
             with csv_path.open() as f:
                 df = pd.read_csv(f, sep="\t")
-                urls.extend(df.url)
-
-        print(f"Step 2: collecting metadata for found {len(urls)} repos")
-        find_metadata_for_urls(
-            urls,
-            save_readme=True,
-            filter_having_nf_files=True,
+                date = csv_path.stem.split("-", 1)[1]
+                url_by_date[date] = df["url"].tolist()
+        print(
+            f"Loaded list of {sum(len(d) for d in url_by_date.values())} repositories to process"
         )
 
-    @staticmethod
-    def read_readme():
-        """
-        Parse the README.md file, collect metadata on the found repositories, and
-        write the metadata to a CSV.
-        """
-        urls = []
-        with Path(README_PATH).open() as f:
-            for line in f:
-                if line.startswith("Tutorials"):
-                    break
-                if line.startswith("* ["):
-                    url = line.split("(")[1].split(")")[0]
-                    urls.append(url)
+        for date, urls in url_by_date.items():
+            for i, url in enumerate(urls):
+                t = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                cntr = f"{i + 1}/{len(urls)}"
+                pref = f"{date} | {cntr:<10} | {t}:"
+                with Session(engine) as session:
+                    repo = session.exec(
+                        select(Repository).where(Repository.url == url)
+                    ).first()
+                    if repo:
+                        print(f"{pref} {url:<80} already in the database")
+                        continue
 
-        find_metadata_for_urls(urls, save_readme=True, filter_having_nf_files=False)
+                    repo = session.exec(
+                        select(FilteredRepository).where(FilteredRepository.url == url)
+                    ).first()
+                    if repo:
+                        print(f"{pref} {url:<80} already in the filtered table")
+                        continue
+
+                    print(f"{pref} {url:<80}", end=" ")
+                    try:
+                        repo: Repository | FilteredRepository = _collect_repo_metadata(
+                            url
+                        )
+                    except RateLimitExceededException:
+                        print("❌rate limit uncaught:")
+                        print_exc()
+                    except Exception as e:
+                        print(f"❌error: {e}")
+                        print_exc()
+                    else:
+                        session.add(repo)
+                        session.commit()
 
     @staticmethod
     def to_airtable():
         """
         Load the metadata from the SQLite database and insert it into the Airtable.
         """
-        api = AirtableApi(airtable_token)
-        base = api.base(airtable_base_id)
-        tables = base.tables()
+        from app.airtable import db_to_airtable
 
-        def _create_table(model_class):
-            fields = []
-            for k, field in model_class.__dict__.items():
-                if isinstance(field, F.CheckboxField):
-                    fields.append(
-                        {
-                            "name": field.field_name,
-                            "type": "checkbox",
-                            "options": {"color": "greenBright", "icon": "check"},
-                        }
-                    )
-                elif isinstance(field, F.DatetimeField):
-                    fields.append(
-                        {
-                            "name": field.field_name,
-                            "type": "dateTime",
-                            "options": {
-                                "timeZone": "utc",
-                                "dateFormat": {
-                                    "format": "LL",
-                                    "name": "friendly",
-                                },
-                                "timeFormat": {
-                                    "format": "HH:mm",
-                                    "name": "24hour",
-                                },
-                            },
-                        }
-                    )
-                elif isinstance(field, F.IntegerField):
-                    fields.append(
-                        {
-                            "name": field.field_name,
-                            "type": "number",
-                            "options": {"precision": 0},
-                        }
-                    )
-                elif isinstance(field, F.TextField):
-                    fields.append(
-                        {
-                            "name": field.field_name,
-                            "type": "singleLineText",
-                        }
-                    )
-            base.create_table(model_class.Meta.table_name, fields=fields)
-
-        if "Filtered repositories" not in [t.name for t in tables]:
-            _create_table(FilteredRepositoryAirtable)
-        if "Repositories" not in [t.name for t in tables]:
-            _create_table(RepositoryAirtable)
-
-        with Session(engine) as session:
-            bad_repos = session.exec(select(FilteredRepositorySQLModel)).all()
-            entries = []
-            for repo in bad_repos:
-                d = repo.model_dump()
-                d["alive"] = repo.exists
-                del d["exists"]
-                entries.append(FilteredRepositoryAirtable(**d))
-            FilteredRepositoryAirtable.batch_save(entries)
-            print(
-                f"Saved {len(entries)} entries to Airtable table 'Filtered repositories'"
-            )
-
-            repos = session.exec(select(RepositorySQLModel)).all()
-            entries = []
-            for repo in repos:
-                d = repo.model_dump()
-                d["alive"] = repo.exists
-                del d["exists"]
-                entries.append(RepositoryAirtable(**d))
-            RepositoryAirtable.batch_save(entries)
-            print(f"Saved {len(entries)} entries to Airtable table 'Repositories'")
+        return db_to_airtable()
 
 
 def get_rate_limit(api_type):
@@ -382,27 +225,37 @@ def get_language_percentages(repo):
     return {lang: (bytes / total_bytes) * 100 for lang, bytes in languages.items()}
 
 
-def _collect_repo_metadata(
-    url, save_readme=False, filter_having_nf_files=False
-) -> RepositorySQLModel | FilteredRepositorySQLModel:
+def _collect_repo_metadata(url) -> Repository | FilteredRepository:
     """
     Collect repository selection criteria and metadata for the spreadsheet:
     https://docs.google.com/document/d/1kZWOBbIt9pY_wloCGcH2d9vYD4zgaTT7x-vTewu0eeA
     """
+
+    def gql_request(query, variables: dict | None = None):
+        headers = {"Authorization": f"Bearer {github_token}"}
+        request = requests.post(
+            "https://api.github.com/graphql",
+            json={"query": query, "variables": variables},
+            headers=headers,
+        )
+        if request.status_code == 200:
+            return request.json()
+        else:
+            raise Exception(f"Query failed to run with a {request.status_code}.")
+
     if url.startswith("http"):
-        short_url = "/".join(url.split("/")[-2:])
+        owner, name = url.split("/")[-2:]
     else:
-        short_url = url
-    d = {"url": url}
+        owner, name = url.split("/")
 
+    # The GraphQL API does not support directory listing with get_contents,
+    # so using the REST API to check for .nf files in the root or 2nd level.
     try:
-        repo = call_rate_aware(lambda: g.get_repo(short_url))
+        repo = call_rate_aware(lambda: g.get_repo(f"{owner}/{name}"))
     except UnknownObjectException:
-        print(f"❌error: repo {short_url} does not exist")
-        d["exists"] = False
-        return FilteredRepositorySQLModel(**d)
+        print(f"❌error: repo {url} does not exist")
+        return FilteredRepository(url=url, exists=False)
 
-    d["exists"] = True
     nf_files_in_root = []
     nf_files_in_subfolders = []
     for f in call_rate_aware(lambda: repo.get_contents("")):
@@ -417,87 +270,133 @@ def _collect_repo_metadata(
                         nf_files_in_subfolders.append(f1.path)
                         break
 
-    if filter_having_nf_files and not nf_files_in_root and not nf_files_in_subfolders:
+    if not nf_files_in_root and not nf_files_in_subfolders:
         print("❌skipping: no *.nf file found in root or 2nd level")
-        d["no_nf_files"] = True
-        return FilteredRepositorySQLModel(**d)
+        return FilteredRepository(url=url, exists=True, no_nf_files=True)
 
-    d["nf_files_in_root"] = ", ".join(nf_files_in_root)
-    d["nf_files_in_subfolders"] = ", ".join(nf_files_in_subfolders)
+    # GraphQL query to fetch repository metadata
+    query = """
+    query RepositoryInfo($owner: String!, $name: String!) {
+        repository(owner: $owner, name: $name) {
+            url
+            name
+            owner {
+                login
+            }
+            description
+            createdAt
+            updatedAt
+            homepageUrl
+            stargazerCount
+            watcherCount: watchers {
+                totalCount
+            }
+            forkCount
+            issues(states: OPEN) {
+                totalCount
+            }
+            pullRequests(states: OPEN) {
+                totalCount
+            }
+            releases(first: 5) {
+                totalCount
+            }
+            parent {
+                nameWithOwner
+            }
+            languages(first: 10) {
+                edges {
+                    size
+                    node {
+                        name
+                    }
+                }
+            }
+            repositoryTopics(first: 10) {
+                nodes {
+                    topic {
+                        name
+                    }
+                }
+            }
+        }
+    }
+    """
+    gql_response = gql_request(query, {"owner": owner, "name": name})
+    repo_info = gql_response["data"]["repository"]
+    bytes_by_lang = {
+        e["node"]["name"]: e["size"]
+        for e in sorted(
+            repo_info["languages"]["edges"], key=lambda x: x["size"], reverse=True
+        )
+    }
+    total_bytes = sum(bytes_by_lang.values())
+    languages_percentages = {
+        lang: (bytes_ / total_bytes) * 100 for lang, bytes_ in bytes_by_lang.items()
+    }
+    nextflow_code_chars = bytes_by_lang.get("Nextflow", 0)
+    nextflow_main_lang = bytes_by_lang and list(bytes_by_lang.keys())[0] == "Nextflow"
+    repository = Repository(
+        url=url,
+        alive=True,
+        nf_files_in_root="",
+        nf_files_in_subfolders="",
+        title=repo_info["name"],
+        owner=repo_info["owner"]["login"],
+        slugified_name=f"{repo_info['name']}--{repo_info['owner']['login']}",
+        description=repo_info["description"],
+        # parse dates into datetime objects
+        updated_at=datetime.datetime.strptime(
+            repo_info["updatedAt"], "%Y-%m-%dT%H:%M:%SZ"
+        ),
+        created_at=datetime.datetime.strptime(
+            repo_info["createdAt"], "%Y-%m-%dT%H:%M:%SZ"
+        ),
+        topics=", ".join(
+            t["repositoryTopics"]["name"]
+            for t in repo_info["repositoryTopics"]["nodes"]
+            if t["topic"]
+        ),
+        website=repo_info["homepageUrl"],
+        stars=repo_info["stargazerCount"],
+        watchers=repo_info["watcherCount"]["totalCount"],
+        forks=repo_info["forkCount"],
+        number_of_releases=repo_info["releases"]["totalCount"],
+        head_fork=repo_info["parent"]["nameWithOwner"] if repo_info["parent"] else None,
+        open_issues=repo_info["issues"]["totalCount"],
+        open_prs=repo_info["pullRequests"]["totalCount"],
+        nextflow_main_lang=nextflow_main_lang,
+        nextflow_code_chars=nextflow_code_chars,
+        languages=", ".join(f"{k}: {v}%" for k, v in languages_percentages.items()),
+        readme_name=None,
+        readme_contains_nextflow=None,
+    )
 
-    d["url"] = call_rate_aware(lambda: repo.html_url)  # clickable URL
-    d["title"] = call_rate_aware(lambda: repo.name)
-    d["owner"] = call_rate_aware(lambda: repo.owner.login)
-    d["slugified_name"] = f"{d['title']}--{d['owner']}"
-    d["description"] = call_rate_aware(lambda: repo.description)
-    d["updated_at"] = call_rate_aware(lambda: repo.updated_at)
-    d["created_at"] = call_rate_aware(lambda: repo.created_at)
-    d["topics"] = ", ".join(call_rate_aware(lambda: repo.get_topics()))
-    d["website"] = call_rate_aware(lambda: repo.homepage)
-    d["stars"] = call_rate_aware(lambda: repo.stargazers_count)
-    d["watchers"] = call_rate_aware(lambda: repo.watchers_count)
-    d["forks"] = call_rate_aware(lambda: repo.forks_count)
-    d["last_commit_date"] = call_rate_aware(
-        lambda: repo.get_commits().reversed[0].commit.committer.date
-    )
-    releases = call_rate_aware(lambda: repo.get_releases())
-    d["number_of_releases"] = call_rate_aware(lambda: releases.totalCount)
-    if d["number_of_releases"]:
-        latest = call_rate_aware(lambda: releases.reversed[0])
-        d["latest_release_date"] = call_rate_aware(lambda: latest.created_at)
-        d["latest_release_name"] = call_rate_aware(lambda: latest.title)
-    d["head_fork"] = call_rate_aware(
-        lambda: repo.parent.full_name if repo.parent else None
-    )
-    d["issues"] = call_rate_aware(lambda: repo.get_issues().totalCount)
-    d["open_issues"] = call_rate_aware(lambda: repo.get_issues(state="open").totalCount)
-    d["closed_issues"] = call_rate_aware(
-        lambda: repo.get_issues(state="closed").totalCount
-    )
-    d["prs"] = call_rate_aware(lambda: repo.get_pulls().totalCount)
-    d["open_prs"] = call_rate_aware(lambda: repo.get_pulls(state="open").totalCount)
-    d["closed_prs"] = call_rate_aware(lambda: repo.get_pulls(state="closed").totalCount)
-    d["contributors"] = call_rate_aware(lambda: repo.get_contributors().totalCount)
-    # d["clones"] = repo.get_clones_traffic()["count"]  # must have push access
-    # d["unique_clones"] = repo.get_clones_traffic()["uniques"]  # must have push access
-    # d["repo_views"] = repo.get_views_traffic()["count"]  # must have push access
-    # d["unique_repo_views"] = repo.get_views_traffic()["uniques"]  # must have push access
-
-    d["nextflow_main_lang"] = call_rate_aware(lambda: repo.language) == "Nextflow"
-    d["nextflow_code_chars"] = call_rate_aware(
-        lambda: repo.get_languages().get("Nextflow", 0)
-    )
-    d["languages"] = ", ".join(
-        f"{n}: {c:.2f}%"
-        for n, c in call_rate_aware(lambda: get_language_percentages(repo)).items()
-    )
-
-    if save_readme:
-        # Locate README (can be README.md, README.rst, README.txt, etc.)
-        # and save it to repos/repo-name/README.md
-        readme = None
-        if check_file_exists(repo, "README.md"):
-            readme = call_rate_aware(lambda: repo.get_contents("README.md"))
+    # Locate README (can be README.md, README.rst, README.txt, etc.)
+    # and save it to repos/repo-name/README.md
+    readme = None
+    if check_file_exists(repo, "README.md"):
+        readme = call_rate_aware(lambda: repo.get_contents("README.md"))
+    else:
+        for f in call_rate_aware(lambda: repo.get_contents("")):
+            if f.type == "file" and f.name.split(".")[0].lower() == "readme":
+                readme = f
+    if readme:
+        repository.readme_name = readme.name
+        try:
+            readme_content = readme.decoded_content.decode()
+        except Exception as r:
+            print(f"⚠️ error parsing {readme.name}: {r}", end=" ")
         else:
-            for f in call_rate_aware(lambda: repo.get_contents("")):
-                if f.type == "file" and f.name.split(".")[0] == "README":
-                    readme = f
-        if readme:
-            d["readme_name"] = readme.name
-            try:
-                readme_content = readme.decoded_content.decode()
-            except Exception as r:
-                print(f"⚠️ error parsing {readme.name}: {r}", end=" ")
-            else:
-                d["readme_contains_nextflow"] = "nextflow" in readme_content.lower()
-                # Save readme to repos/repo-name/README.md
-                readme_path = Path("readmes") / d["slugified_name"] / readme.name
-                readme_path.parent.mkdir(parents=True, exist_ok=True)
-                with readme_path.open("w") as f:
-                    f.write(readme_content)
+            repository.readme_contains_nextflow = "nextflow" in readme_content.lower()
+            # Save readme to repos/repo-name/README.md
+            readme_path = Path("readmes") / repository.slugified_name / readme.name
+            readme_path.parent.mkdir(parents=True, exist_ok=True)
+            with readme_path.open("w") as f:
+                f.write(readme_content)
 
     print("👌")
-    return RepositorySQLModel(**d)
+    return repository
 
 
 def _process_github_search_result(paginated_list, count: int, out_dir: Path, date: str):
@@ -547,55 +446,6 @@ def _process_github_search_result(paginated_list, count: int, out_dir: Path, dat
     print(f"Appending {len(repo_infos)} entries to file {out_path}...")
     df = pd.DataFrame(repo_infos)
     df.to_csv(out_path, index=False, sep="\t", header=True)
-
-
-def search_gh(out_dir: Path):
-    """
-    Search for GitHub repositories that mention "nextflow" in README.
-
-    GitHub returns only top 1000 entries, so we work around by searching year
-    by each year, or month by month or day by date if needed, and concatenate.
-    """
-    base_query = "nextflow in:readme archived:false"
-    for year in range(2015, datetime.datetime.today().year + 1):
-        print(f"Searching for Nextflow repositories in {year}...")
-        query = f"{base_query} created:{year}-01-01..{year}-12-31"
-        result = g.search_repositories(query, sort="updated")
-        count = call_rate_aware(lambda: result.totalCount, api_type="search")
-        if count < 1000:
-            print(f"Found {count} repositories in {year}")
-            _process_github_search_result(result, count, out_dir, str(year))
-            print("")
-            continue
-
-        print(
-            f"Search result includes {count}>=1000 repositories in {year}, which "
-            f"indicates that we hit search limit. Search month by month instead..."
-        )
-        for month in range(1, 12 + 1):
-            month_days = calendar.monthrange(year, month)[1]
-            query = f"{base_query} created:{year}-{month:02d}-01..{year}-{month:02d}-{month_days}"
-            result = g.search_repositories(query, sort="updated")
-            count = call_rate_aware(lambda: result.totalCount, api_type="search")
-            if count < 1000:
-                print(f"Found {count} repositories in month {year}-{month}")
-                _process_github_search_result(result, count, out_dir, f"{year}-{month}")
-                print("")
-                continue
-
-            print(
-                f"Search result includes {count}>=1000 repositories in {year}-{month}, which "
-                f"indicates that we hit search limit. Search day by day instead..."
-            )
-            for day in range(1, calendar.monthrange(year, month)[1] + 1):
-                query = f"{base_query} created:{year}-{month:02d}-{day:02d}"
-                result = g.search_repositories(query, sort="updated")
-                count = call_rate_aware(lambda: result.totalCount, api_type="search")
-                print(f"Found {count} repositories in day {year}-{month}-{day}")
-                _process_github_search_result(
-                    result, count, out_dir, f"{year}-{month}-{day}"
-                )
-                print("")
 
 
 if __name__ == "__main__":
