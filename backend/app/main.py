@@ -25,13 +25,25 @@ def create_db_and_tables() -> None:
 
 
 @app.get("/", tags=["root"])
-async def read_repositories():
+async def repositories():
     with Session(engine) as session:
         return session.exec(select(models.Repository)).all()
 
 
+@app.get("/spotlight", response_model=list[models.Repository])
+def spotlight():
+    with Session(engine) as session:
+        statement = (
+            select(models.Repository)
+            .order_by(models.Repository.highlighted.desc())
+            .order_by(models.Repository.stars.desc())
+            .limit(4)
+        )
+        return session.exec(statement).all()
+
+
 @app.post("/repositories", response_model=models.Repository)
-async def read_repository(repo_url: str):
+async def repository(repo_url: str):
     with Session(engine) as session:
         statement = select(models.Repository).where(models.Repository.url == repo_url)
         return session.exec(statement).first()

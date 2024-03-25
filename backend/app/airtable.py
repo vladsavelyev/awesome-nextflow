@@ -1,13 +1,12 @@
 import os
 
 import dotenv
-import tqdm
 from pyairtable.orm import Model as AirtableModel, fields as F
 from pyairtable import Api as AirtableApi
 from sqlmodel import Session, select
 
 from app.database import engine
-from app.models import FilteredRepository, Repository
+from app.models import Repository
 
 dotenv.load_dotenv()
 
@@ -15,6 +14,7 @@ airtable_base_id = os.getenv("AIRTABLE_BASE_ID")
 airtable_token = os.getenv("AIRTABLE_TOKEN")
 
 
+# noinspection PyArgumentList
 class RepositoryAirtable(AirtableModel):
     url = F.TextField("URL")
     alive = F.CheckboxField("Alive")
