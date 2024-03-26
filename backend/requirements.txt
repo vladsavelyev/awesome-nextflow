@@ -11,3 +11,5 @@ sqlmodel
 pyairtable
 dotenv
 requests
+elasticsearch
+tqdm

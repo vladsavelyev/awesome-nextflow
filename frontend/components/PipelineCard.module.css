@@ -3,7 +3,7 @@
     border-radius: 10px;
     padding: 1.5rem;
     margin: 1rem;
-    text-align: center;
+    text-align: left;
     transition: color 0.15s ease, border-color 0.15s ease;
 }
 

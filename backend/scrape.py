@@ -16,20 +16,19 @@ import fire
 import humanize
 import pandas as pd
 import requests
+import tqdm
 from github import Github
 from github.GithubException import UnknownObjectException, RateLimitExceededException
 from sqlmodel import Session, select
 
-from app.database import engine
+from app.database import engine, es
 from app.models import Repository, FilteredRepository
 
 dotenv.load_dotenv()
 
 github_token = os.getenv("GITHUB_TOKEN")
 
-
-README_PATH = "../README.md"
-BLACKLIST = [
+REPO_BLACKLIST = [
     "nextflow-io",
     "nf-core/modules",
     "nf-core/tools",
@@ -166,6 +165,31 @@ class Scraper:
         from app.airtable import db_to_airtable
 
         return db_to_airtable()
+
+    @staticmethod
+    def create_es_index(name="repositories"):
+        """
+        Create an Elasticsearch index and populate it with the data from the database.
+        Use title and description fields for searching.
+        """
+        if es.indices.exists(index=name):
+            print(f"Index {name} already exists, delete to re-create")
+            return
+        es.indices.create(
+            index=name,
+            body={
+                "mappings": {
+                    "properties": {
+                        "title": {"type": "text"},
+                        "description": {"type": "text"},
+                    }
+                }
+            },
+        )
+        with Session(engine) as session:
+            repos = session.exec(select(Repository)).all()
+            for repo in tqdm.tqdm(repos):
+                es.index(index=name, id=repo.url, body=repo.model_dump())
 
 
 def get_rate_limit(api_type):
@@ -426,10 +450,10 @@ def _process_github_search_result(paginated_list, count: int, out_dir: Path, dat
                 f"{repo.stargazers_count} stars... ",
                 end="",
             )
-            if repo.owner.login in BLACKLIST:
+            if repo.owner.login in REPO_BLACKLIST:
                 print(f"❌ Repo owner {repo.owner.login} is blacklisted")
                 continue
-            elif repo.full_name in BLACKLIST:
+            elif repo.full_name in REPO_BLACKLIST:
                 print(f"❌ Repo {repo.full_name} is blacklisted")
                 continue
             print("👌")
